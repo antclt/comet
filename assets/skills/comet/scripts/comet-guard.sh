@@ -185,7 +185,7 @@ project_config_value() {
     return 0
   fi
 
-  for config in ".comet.yaml" "comet.yaml" ".comet.yml" "comet.yml"; do
+  for config in ".comet/config.yaml" ".comet.yaml" "comet.yaml" ".comet.yml" "comet.yml"; do
     if [ -f "$config" ]; then
       value=$(grep "^${field}:" "$config" 2>/dev/null | sed "s/^${field}: *//" || true)
       value=$(strip_inline_comment "$value")
@@ -196,6 +196,82 @@ project_config_value() {
       fi
     fi
   done
+}
+
+configured_language() {
+  local language
+  language=$(yaml_field_value "language" 2>/dev/null || true)
+  if [ -z "$language" ] || [ "$language" = "null" ]; then
+    language=$(project_config_value "language" 2>/dev/null || true)
+  fi
+
+  # Missing config defaults to en; a present-but-unrecognized value is a
+  # config error and must fail closed rather than silently coercing to en.
+  if [ -z "$language" ] || [ "$language" = "null" ]; then
+    printf '%s\n' "en"
+    return 0
+  fi
+
+  case "$language" in
+    en|zh-CN)
+      printf '%s\n' "$language"
+      ;;
+    *)
+      echo "configured language '$language' is invalid; expected en or zh-CN." >&2
+      return 1
+      ;;
+  esac
+}
+
+# Strips fenced code blocks (``` ... ```) before language counting, so pasted
+# commands/paths/hashes don't skew the CJK-vs-English dominant-language check.
+strip_fenced_code_blocks() {
+  awk '
+    /^[[:space:]]*```/ { infence = !infence; next }
+    infence { next }
+    { print }
+  ' "$1" 2>/dev/null || true
+}
+
+# Matches CJK Unified Ideographs (U+4E00-U+9FFF) by their raw 3-byte UTF-8
+# encoding rather than a locale-collated character range: under LC_ALL=C.UTF-8
+# (a common CI/container default), a range like [一-龥] fails to compile
+# ("Invalid collation character") and silently counts as zero. Forcing
+# LC_ALL=C makes grep treat the pattern and input as raw bytes, which is
+# consistent across GNU grep (Linux), BSD grep (macOS), and Git Bash (Windows).
+count_cjk_chars() {
+  (strip_fenced_code_blocks "$1" | LC_ALL=C grep -oE $'[\xe4-\xe9][\x80-\xbf][\x80-\xbf]' 2>/dev/null || true) | wc -l | awk '{print $1}'
+}
+
+count_english_words() {
+  (strip_fenced_code_blocks "$1" | LC_ALL=C grep -oE '[A-Za-z][A-Za-z0-9_-]{2,}' 2>/dev/null || true) | wc -l | awk '{print $1}'
+}
+
+document_language_matches_configured() {
+  local file="$1"
+  local language cjk english_words
+  language=$(configured_language) || return 1
+  cjk=$(count_cjk_chars "$file")
+  english_words=$(count_english_words "$file")
+
+  case "$language" in
+    zh-CN)
+      if [ "$cjk" -lt 20 ] && [ "$english_words" -ge 20 ]; then
+        echo "configured language is zh-CN, but $file appears to be English-dominant (cjk_chars=$cjk, english_words=$english_words)." >&2
+        echo "Next: regenerate or rewrite this artifact in Chinese while preserving necessary technical terms." >&2
+        return 1
+      fi
+      ;;
+    en)
+      if [ "$cjk" -gt 20 ] && [ "$cjk" -gt "$english_words" ]; then
+        echo "configured language is en, but $file appears to be Chinese-dominant (cjk_chars=$cjk, english_words=$english_words)." >&2
+        echo "Next: regenerate or rewrite this artifact in English while preserving necessary technical terms." >&2
+        return 1
+      fi
+      ;;
+  esac
+
+  return 0
 }
 
 file_nonempty() {
@@ -633,10 +709,13 @@ guard_open() {
   workflow=$(yaml_field_value "workflow" 2>/dev/null || true)
 
   check "proposal.md exists and non-empty" file_nonempty "$CHANGE_DIR/proposal.md"
+  check "proposal.md matches configured language" document_language_matches_configured "$CHANGE_DIR/proposal.md"
   if [ "$workflow" = "full" ]; then
     check "design.md exists and non-empty" file_nonempty "$CHANGE_DIR/design.md"
+    check "design.md matches configured language" document_language_matches_configured "$CHANGE_DIR/design.md"
   fi
   check "tasks.md exists and non-empty" file_nonempty "$CHANGE_DIR/tasks.md"
+  check "tasks.md matches configured language" document_language_matches_configured "$CHANGE_DIR/tasks.md"
   check "tasks.md has at least one task" tasks_has_any
 }
 
@@ -648,8 +727,11 @@ guard_design() {
   workflow=$(yaml_field_value "workflow" 2>/dev/null || true)
 
   check "proposal.md exists" file_nonempty "$CHANGE_DIR/proposal.md"
+  check "proposal.md matches configured language" document_language_matches_configured "$CHANGE_DIR/proposal.md"
   check "design.md exists" file_nonempty "$CHANGE_DIR/design.md"
+  check "design.md matches configured language" document_language_matches_configured "$CHANGE_DIR/design.md"
   check "tasks.md exists" file_nonempty "$CHANGE_DIR/tasks.md"
+  check "tasks.md matches configured language" document_language_matches_configured "$CHANGE_DIR/tasks.md"
   check "design handoff context exists" design_handoff_context_valid
   check "design handoff markdown is traceable" design_handoff_markdown_traceable
   if [ "$(context_compression_mode)" = "beta" ]; then
@@ -663,6 +745,7 @@ guard_design() {
 
   if [ -n "$design_doc" ] && [ "$design_doc" != "null" ]; then
     check "Design Doc ($design_doc) exists" file_nonempty "$design_doc"
+    check "Design Doc matches configured language" document_language_matches_configured "$design_doc"
     check "Design Doc frontmatter links current change" design_doc_links_current_change
     check "Design Doc declares technical design role" design_doc_declares_technical_role
     check "Design Doc declares OpenSpec as canonical spec" design_doc_declares_canonical_spec
@@ -694,6 +777,12 @@ guard_build() {
   check "tasks.md all tasks checked" tasks_all_done
   check "Superpowers plan all tasks checked" plan_tasks_all_done
   check "proposal.md exists" file_nonempty "$CHANGE_DIR/proposal.md"
+  check "proposal.md matches configured language" document_language_matches_configured "$CHANGE_DIR/proposal.md"
+  local plan
+  plan=$(yaml_field_value "plan" 2>/dev/null || true)
+  if [ -n "$plan" ] && [ "$plan" != "null" ] && [ -f "$plan" ]; then
+    check "Superpowers plan matches configured language" document_language_matches_configured "$plan"
+  fi
   check "Build passes" build_passes
 }
 
@@ -703,6 +792,11 @@ guard_verify() {
   check "tasks.md all tasks checked" tasks_all_done
   check "Build passes" verification_command_passes
   check "verification_report exists" verification_report_exists
+  local report
+  report=$(verification_report_path 2>/dev/null || true)
+  if [ -n "$report" ] && [ -f "$report" ]; then
+    check "verification_report matches configured language" document_language_matches_configured "$report"
+  fi
   check "branch_status=handled" branch_status_handled
 }
 
