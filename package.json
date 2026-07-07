@@ -16,7 +16,7 @@
     "access": "public"
   },
   "bin": {
-    "comet": "./bin/comet.js"
+    "comet": "bin/comet.js"
   },
   "files": [
     "dist",
@@ -45,8 +45,8 @@
     "benchmark:execution": "node scripts/benchmark/context-execution-benchmark.mjs",
     "benchmark:classic": "node scripts/benchmark/classic-baseline-regression.mjs",
     "benchmark:bundle": "pnpm build && node scripts/benchmark/comet-bundle-compatibility-benchmark.mjs",
-    "prepare": "husky && pnpm run build",
-    "prepublishOnly": "node scripts/release/prepublish-check.js && pnpm run build",
+    "prepare": "node scripts/release/prepare.js",
+    "prepublishOnly": "node scripts/release/prepublish-check.js && node build.js",
     "postinstall": "node scripts/install/postinstall.js"
   },
   "lint-staged": {

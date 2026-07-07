@@ -5,12 +5,15 @@
  * Checks for common secret patterns in files that would be published.
  */
 
-import { readFileSync, readdirSync, statSync } from 'fs';
-import { join, extname } from 'path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { extname, join } from 'path';
 
 const SECRET_PATTERNS = [
   { pattern: /(?:api[_-]?key|apikey)\s*[:=]\s*['"][A-Za-z0-9_\-]{20,}['"]/i, name: 'API key' },
-  { pattern: /(?:secret|token|password|passwd|pwd)\s*[:=]\s*['"][^\s'"]{8,}['"]/i, name: 'Secret/token' },
+  {
+    pattern: /(?:secret|token|password|passwd|pwd)\s*[:=]\s*['"][^\s'"]{8,}['"]/i,
+    name: 'Secret/token',
+  },
   { pattern: /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----/, name: 'Private key' },
   { pattern: /ghp_[A-Za-z0-9]{36}/, name: 'GitHub token' },
   { pattern: /sk-[A-Za-z0-9]{20,}/, name: 'OpenAI key' },
@@ -18,27 +21,102 @@ const SECRET_PATTERNS = [
   { pattern: /AKIA[0-9A-Z]{16}/, name: 'AWS access key' },
 ];
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
-const TEXT_EXTENSIONS = new Set(['.js', '.ts', '.json', '.md', '.txt', '.yml', '.yaml', '.toml']);
+const TEXT_EXTENSIONS = new Set([
+  '.cjs',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.ts',
+  '.tsx',
+  '.json',
+  '.md',
+  '.txt',
+  '.yml',
+  '.yaml',
+  '.toml',
+]);
 const README_IMAGE_PATTERN = /\b(?:src|srcset)=["'](?:\.\/)?img\//;
 
-function* walkFiles(dir) {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    const stat = statSync(full);
-    if (stat.isDirectory()) {
-      if (!SKIP_DIRS.has(entry)) {
-        yield* walkFiles(full);
-      }
-    } else if (stat.isFile()) {
-      yield full;
+function normalized(value) {
+  return value.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+/gu, '/');
+}
+
+function* walkIncludedPath(relativePath) {
+  const stat = statSync(relativePath);
+  if (stat.isFile()) {
+    yield normalized(relativePath);
+    return;
+  }
+  if (!stat.isDirectory()) return;
+
+  for (const entry of readdirSync(relativePath)) {
+    yield* walkIncludedPath(join(relativePath, entry));
+  }
+}
+
+function readPackageFileList() {
+  const packageJson = JSON.parse(readFileSync('package.json', 'utf-8'));
+  const files = Array.isArray(packageJson.files) ? packageJson.files : [];
+  const includes = files.filter((entry) => typeof entry === 'string' && !entry.startsWith('!'));
+  const excludes = files
+    .filter((entry) => typeof entry === 'string' && entry.startsWith('!'))
+    .map((entry) => normalized(entry.slice(1)));
+  return { includes, excludes };
+}
+
+function isExcludedFromPackage(filePath, excludes) {
+  const path = normalized(filePath);
+  for (const pattern of excludes) {
+    if (pattern === 'dist/**/*.test.js' && path.startsWith('dist/') && path.endsWith('.test.js')) {
+      return true;
+    }
+    if (
+      pattern === 'dist/**/__tests__' &&
+      path.startsWith('dist/') &&
+      path.split('/').includes('__tests__')
+    ) {
+      return true;
+    }
+    if (path === pattern || path.startsWith(`${pattern}/`)) {
+      return true;
     }
   }
+  return false;
+}
+
+function alwaysIncludedPackageFiles() {
+  const entries = readdirSync('.');
+  return entries.filter((entry) => {
+    const lower = entry.toLowerCase();
+    return (
+      lower === 'package.json' ||
+      lower.startsWith('readme') ||
+      lower.startsWith('license') ||
+      lower.startsWith('licence')
+    );
+  });
+}
+
+function publishedFiles() {
+  const { includes, excludes } = readPackageFileList();
+  const paths = new Set();
+
+  for (const entry of [...alwaysIncludedPackageFiles(), ...includes]) {
+    const relativePath = normalized(entry);
+    if (!relativePath || relativePath.startsWith('!') || !existsSync(relativePath)) continue;
+    for (const filePath of walkIncludedPath(relativePath)) {
+      if (!isExcludedFromPackage(filePath, excludes)) {
+        paths.add(filePath);
+      }
+    }
+  }
+
+  return [...paths].sort();
 }
 
 let found = 0;
 
-for (const filePath of walkFiles('.')) {
+for (const filePath of publishedFiles()) {
   const ext = extname(filePath);
   if (!TEXT_EXTENSIONS.has(ext)) continue;
 
