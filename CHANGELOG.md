@@ -18,6 +18,7 @@ All notable changes to @rpamis/comet will be documented in this file.
 
 ### Fixed
 
+- **npm publish preflight**: Release security scanning now prunes literal and wildcard-excluded package paths before accessing the filesystem, so ignored Eval caches and temporary pytest directories cannot block Windows publishing with local permission errors.
 - **Parallel active change guards**: Classic source-write hooks now bind branch and worktree execution to the explicitly selected change, allow legal build work despite unrelated open/design/archive changes, and fail with an actionable selection prompt when multiple active changes are ambiguous ([#196](https://github.com/rpamis/comet/issues/196)).
 - **Codex CLI Skill discovery**: Codex project and global installs now place Comet Skills in the current `.agents/skills` discovery directory while keeping Codex-specific configuration under `.codex`; update and uninstall safely migrate managed legacy `.codex/skills` installs without removing unrelated Skills.
 - **Generated Eval manifests**: `comet eval` now resolves Factory `draftHash` placeholders into temporary version-bound manifests before collection, so `/comet-any` output can be evaluated immediately without modifying generated Bundle files ([#183](https://github.com/rpamis/comet/issues/183)).

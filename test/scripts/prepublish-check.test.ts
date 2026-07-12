@@ -115,4 +115,38 @@ describe('prepublish security check', () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stderr).not.toContain('[SECURITY]');
   });
+
+  it('does not stat excluded directories while expanding included package paths', async () => {
+    const root = await makePackageFixture();
+    const packageJson = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf-8'));
+    packageJson.files = ['eval', '!eval/.cache', '!eval/.pytest-basetemp-*'];
+    await fs.writeFile(path.join(root, 'package.json'), JSON.stringify(packageJson, null, 2));
+    await writeFile(root, 'eval/pyproject.toml', '[project]\nname = "fixture"\n');
+
+    const missingTarget = path.join(root, 'removed-cache-target');
+    await fs.mkdir(missingTarget);
+    await fs.symlink(
+      missingTarget,
+      path.join(root, 'eval/.cache'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await fs.rm(missingTarget, { recursive: true });
+
+    const missingWildcardTarget = path.join(root, 'removed-pytest-target');
+    await fs.mkdir(missingWildcardTarget);
+    await fs.symlink(
+      missingWildcardTarget,
+      path.join(root, 'eval/.pytest-basetemp-broken'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await fs.rm(missingWildcardTarget, { recursive: true });
+
+    const result = spawnSync(process.execPath, [prepublishCheck], {
+      cwd: root,
+      encoding: 'utf-8',
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain('[SECURITY] No secrets detected. Safe to publish.');
+  });
 });
